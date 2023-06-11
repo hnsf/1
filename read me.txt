@@ -1,0 +1,1 @@
+data is in D:\bertmodel so the file should also be located in this file case
