@@ -1,0 +1,101 @@
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import cross_val_score
+import torch
+from torch import optim
+import torch.nn as nn
+import transformers as tfs
+import warnings
+from transformers import logging
+logging.set_verbosity_error()
+import random
+
+warnings.filterwarnings('ignore')
+neg_df = open("D:/bertmodel/data/neg.txt",'r',encoding='utf-8').readlines()
+neg_target = [1 for _ in range(len(neg_df))] 
+pos_df=open("D:/bertmodel/data/neg.txt",'r',encoding='utf-8').readlines()
+pos_target = [0 for _ in range(len(pos_df))] 
+neg_dict = dict(zip(neg_df,neg_target))
+pos_dict = dict(zip(pos_df,pos_target))
+tota = dict(list(neg_dict.items())[:70] + list(pos_dict.items())[:70])
+list_dict = list(tota.items())
+random.shuffle(list_dict)
+
+# 将打乱后的列表转换回字典
+train_set = np.array(list_dict)
+
+#train_set = train_df[:3000]   #取其中的3000条数据作为我们的数据集
+print("Train set shape:", train_set.shape)
+train_set=pd.DataFrame(train_set)
+#train_set[1].value_counts()   #查看数据集中标签的分布
+
+sentences = train_set[0].values
+targets = train_set[1].values
+train_inputs, test_inputs, train_targets, test_targets = train_test_split(np.array(sentences), np.array(targets), test_size=0.25)
+
+batch_size = 64
+batch_count = int(len(train_inputs) / batch_size)
+batch_train_inputs, batch_train_targets = [], []
+for i in range(batch_count):
+    batch_train_inputs.append(train_inputs[i*batch_size : (i+1)*batch_size])
+    batch_train_targets.append(train_targets[i*batch_size : (i+1)*batch_size])
+
+
+class BertClassificationModel(nn.Module):
+   def __init__(self):
+      super(BertClassificationModel, self).__init__()
+      model_class, tokenizer_class= (tfs.BertModel, tfs.BertTokenizer)
+
+      self.tokenizer = tokenizer_class.from_pretrained("bert-baes-chinese")
+      self.bert = model_class.from_pretrained("bert-baes-chinese")
+      self.dense = nn.Linear(768, 2)  # bert默认的隐藏单元数是768， 输出单元是2，表示二分类
+
+   def forward(self, batch_sentences):
+      batch_tokenized = self.tokenizer.batch_encode_plus(batch_sentences, add_special_tokens=True,
+                                             max_len=66,
+                                             pad_to_max_length=True)  # tokenize、add special token、pad
+      input_ids = torch.tensor(batch_tokenized['input_ids'])
+      attention_mask = torch.tensor(batch_tokenized['attention_mask'])
+      bert_output = self.bert(input_ids, attention_mask=attention_mask)
+      bert_cls_hidden_state = bert_output[0][:, 0, :]  # 提取[CLS]对应的隐藏状态
+      linear_output = self.dense(bert_cls_hidden_state)
+      return linear_output
+
+
+# train the model
+epochs = 2
+lr = 0.01
+print_every_batch = 1
+bert_classifier_model = BertClassificationModel()
+optimizer = optim.SGD(bert_classifier_model.parameters(), lr=lr, momentum=0.9)
+criterion = nn.CrossEntropyLoss()
+
+for epoch in range(epochs):
+   print_avg_loss = 0
+   for i in range(batch_count):
+      inputs = batch_train_inputs[i]
+      labels = torch.tensor(batch_train_targets[i].astype("float32"))
+      optimizer.zero_grad()
+      outputs = bert_classifier_model(inputs)
+      loss = criterion(outputs, labels)
+      loss.backward()
+      optimizer.step()
+      import ggg
+      print_avg_loss += loss.item()
+      if i % print_every_batch == (print_every_batch - 1):
+         print("Batch: %d, Loss: %.4f" % ((i + 1), print_avg_loss / print_every_batch))
+         print_avg_loss = 0
+# eval the trained model
+total = len(test_inputs)
+hit = 0
+with torch.no_grad():
+    for i in range(total):
+        outputs = bert_classifier_model([test_inputs[i]])
+        _, predicted = torch.max(outputs, 1)
+        if predicted == test_targets[i]:
+            hit += 1
+
+print("Accuracy: %.2f%%" % (hit / total * 100))
